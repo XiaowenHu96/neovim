@@ -101,6 +101,7 @@ static int current_augroup = AUGROUP_DEFAULT;
 static bool au_need_clean = false;
 
 static int autocmd_blocked = 0;  // block all autocmds
+static int aucmd_prepbuf_depth = 0;
 
 static bool autocmd_nested = false;
 static bool autocmd_include_groups = false;
@@ -930,6 +931,10 @@ int do_autocmd_event(event_T event, const char *pat, bool once, int nested, cons
     if (is_buflocal) {
       const int buflocal_nr = aupat_get_buflocal_nr(pat, patlen);
 
+      if (buflocal_nr == 0 || buflist_findnr(buflocal_nr) == NULL) {
+        semsg(_(e_buffer_nr_invalid_buffer_number), buflocal_nr);
+        return FAIL;
+      }
       // normalize pat into standard "<buffer>#N" form
       aupat_normalize_buflocal_pat(buflocal_pat, pat, patlen, buflocal_nr);
 
@@ -999,6 +1004,10 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
   if (is_buflocal) {
     buflocal_nr = aupat_get_buflocal_nr(pat, patlen);
 
+    if (buflocal_nr == 0 || buflist_findnr(buflocal_nr) == NULL) {
+      semsg(_(e_buffer_nr_invalid_buffer_number), buflocal_nr);
+      return FAIL;
+    }
     // normalize pat into standard "<buffer>#N" form
     aupat_normalize_buflocal_pat(buflocal_pat, pat, patlen, buflocal_nr);
 
@@ -1024,12 +1033,6 @@ int autocmd_register(int64_t id, event_T event, const char *pat, int patlen, int
 
   // No matching pattern found, allocate a new one.
   if (ap == NULL) {
-    // refuse to add buffer-local ap if buffer number is invalid
-    if (is_buflocal && (buflocal_nr == 0 || buflist_findnr(buflocal_nr) == NULL)) {
-      semsg(_("E680: <buffer=%d>: invalid buffer number "), buflocal_nr);
-      return FAIL;
-    }
-
     ap = xmalloc(sizeof(AutoPat));
 
     if (is_buflocal) {
@@ -1354,9 +1357,9 @@ void aucmd_prepbuf(aco_save_T *aco, buf_T *buf)
     // disable the Visual area, position may be invalid in another buffer
     VIsual_active = false;
   }
-  if (autocmd_save.save_aucmd == NULL) {
-    autocmd_save = *aco;
-    autocmd_save.save_aucmd = aco;
+  if (aco->new_curwin_handle != aco->save_curwin_handle) {
+    autocmd_save_curwin = aucmd_prepbuf_depth == 0 ? aco->save_curwin_handle : autocmd_save_curwin;
+    aucmd_prepbuf_depth++;
   }
 }
 
@@ -1379,9 +1382,6 @@ void aucmd_restbuf(aco_save_T *aco)
   // NULL br_buf means `aucmd_prepbuf` was never called on this `aco`.
   if (aco->new_curbuf.br_buf == NULL) {
     return;
-  }
-  if (autocmd_save.save_aucmd == aco) {
-    autocmd_save.save_aucmd = NULL;
   }
 
   if (aco->use_aucmd_win_idx >= 0) {
@@ -1488,6 +1488,11 @@ win_found:
   check_cursor(curwin);  // just in case lines got deleted
   if (VIsual_active) {
     check_pos(curbuf, &VIsual);
+  }
+  if (aco->new_curwin_handle != aco->save_curwin_handle) {
+    assert(aucmd_prepbuf_depth > 0);
+    aucmd_prepbuf_depth--;
+    autocmd_save_curwin = aucmd_prepbuf_depth == 0 ? 0 : autocmd_save_curwin;
   }
 }
 
@@ -2589,7 +2594,8 @@ int aupat_get_buflocal_nr(const char *pat, int patlen)
 
     // "<buffer=123>"
     if (skipdigits(pat + 8) == pat + patlen - 1) {
-      return atoi(pat + 8);
+      char *p = (char *)pat + 8;
+      return getdigits_int(&p, false, 0);
     }
   }
 
