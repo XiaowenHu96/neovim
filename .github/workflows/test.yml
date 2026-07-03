@@ -90,6 +90,28 @@ jobs:
           cmake --preset ci -D CMAKE_BUILD_TYPE=Debug -D CMAKE_INSTALL_PREFIX:PATH=$INSTALL_PREFIX $BUILD_FLAGS
           cmake --build build
 
+      - name: Set up perl host crash instrumentation
+        run: |
+          sudo mkdir -p /tmp/cores
+          sudo chmod 1777 /tmp/cores
+          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p
+          mkdir -p "$HOME/hostshim"
+          cat > "$HOME/hostshim/perl" <<'EOF'
+          #!/bin/bash
+          for a in "$@"; do case "$a" in *start_host*)
+            ulimit -c unlimited
+            /usr/bin/perl "$@" 2>> "${NVIM_PROVIDER_STDERR:-/tmp/host.stderr}"
+            rc=$?
+            extra=""
+            if [ $rc -ge 128 ]; then extra=" (signal $((rc-128)))"; fi
+            echo "== perl host exited rc=$rc$extra" >> "${NVIM_PROVIDER_STDERR:-/tmp/host.stderr}"
+            exit $rc
+          esac; done
+          exec /usr/bin/perl "$@"
+          EOF
+          chmod +x "$HOME/hostshim/perl"
+          echo "$HOME/hostshim" >> "$GITHUB_PATH"
+
       - name: full oldtest suite (faithful reproduction context)
         timeout-minutes: 25
         run: |
@@ -125,6 +147,21 @@ jobs:
           done
           echo "overall: $([ $fail -eq 0 ] && echo ALL PASSED || echo SOME ITERATIONS FAILED)"
           exit $fail
+
+      - if: '!cancelled()'
+        name: Analyze core dumps
+        run: |
+          shopt -s nullglob
+          found=0
+          for core in /tmp/cores/core.*; do
+            found=1
+            echo "=== $core ==="
+            file "$core" || true
+            gdb -n -batch -ex 'bt' -ex 'info sharedlibrary' /usr/bin/perl "$core" 2>&1 | head -100 || true
+          done
+          [ $found -eq 0 ] && echo "no core dumps found"
+          exit 0
+        shell: bash
 
       - if: '!cancelled()'
         name: Show logs
