@@ -596,9 +596,9 @@ void nvim_win_resize(Window win, Integer height, Integer width, Dict(win_resize)
                  opts->anchor.data, { return; });
   }
   if (height > 0) {
-    win_setheight_win((int)height, w, from_top);
+    TRY_WRAP(err, win_setheight_win((int)height, w, from_top));
   }
-  if (width > 0) {
-    win_setwidth_win((int)width, w, from_left);
+  if (!ERROR_SET(err) && width > 0) {
+    TRY_WRAP(err, win_setwidth_win((int)width, w, from_left));
   }
 }
