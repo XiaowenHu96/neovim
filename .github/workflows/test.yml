@@ -14,8 +14,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Unique per run: allow several dispatched runs of this debug workflow in parallel.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
 
 env:
   ASAN_OPTIONS: detect_leaks=1:check_initialization_order=1:log_path=${{ github.workspace }}/build/log/asan:intercept_tls_get_addr=0
@@ -35,7 +36,7 @@ env:
 # the host dies ("ch 3 was closed by the peer" in Test_set_cursor).
 jobs:
   posix:
-    name: ${{ matrix.build.os }} ${{ matrix.build.flavor }} ${{ matrix.build.cc }} ${{ matrix.test }}
+    name: ${{ matrix.build.os }} ${{ matrix.build.flavor }} ${{ matrix.build.cc }} ${{ matrix.test }} (copy ${{ matrix.copy }})
     strategy:
       fail-fast: false
       matrix:
@@ -46,8 +47,9 @@ jobs:
             { runner: ubuntu-24.04, os: ubuntu, flavor: puc-lua, cc: gcc, deps_flags: -D USE_BUNDLED_LUAJIT=OFF -D USE_BUNDLED_LUA=ON, flags: -D PREFER_LUA=ON },
           ]
         test: [oldtest]
+        copy: [1, 2, 3]
     runs-on: ${{ matrix.build.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CC: ${{ matrix.build.cc }}
       NVIM_TEST_INTEG: ${{ matrix.build.flavor == 'release' && '1' || '0' }}
@@ -88,11 +90,24 @@ jobs:
           cmake --preset ci -D CMAKE_BUILD_TYPE=Debug -D CMAKE_INSTALL_PREFIX:PATH=$INSTALL_PREFIX $BUILD_FLAGS
           cmake --build build
 
-      - name: oldtest test_perl loop
+      - name: full oldtest suite (faithful reproduction context)
+        timeout-minutes: 25
+        run: |
+          fail=0
+          make -C test/old/testdir NVIM_PRG=$(realpath build)/bin/nvim || fail=1
+          if test -s "$NVIM_PROVIDER_STDERR"; then
+            echo "--- provider host stderr captured during full suite ---"
+            cat "$NVIM_PROVIDER_STDERR"
+            rm -f "$NVIM_PROVIDER_STDERR"
+          fi
+          exit $fail
+
+      - if: '!cancelled()'
+        name: oldtest test_perl loop
         timeout-minutes: 20
         run: |
           fail=0
-          for i in $(seq 1 20); do
+          for i in $(seq 1 100); do
             echo "::group::iteration $i"
             rm -f test/old/testdir/test_perl.res test/old/testdir/messages test/old/testdir/test.log
             make -C test/old/testdir NVIM_PRG=$(realpath build)/bin/nvim test_perl.res || true
