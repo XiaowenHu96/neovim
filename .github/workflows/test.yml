@@ -36,7 +36,7 @@ env:
 # the host dies ("ch 3 was closed by the peer" in Test_set_cursor).
 jobs:
   posix:
-    name: ${{ matrix.build.os }} ${{ matrix.build.flavor }} ${{ matrix.build.cc }} ${{ matrix.test }} (copy ${{ matrix.copy }})
+    name: ${{ matrix.build.os }} ${{ matrix.build.flavor }} ${{ matrix.build.cc }} ${{ matrix.test }} msgpack-${{ matrix.msgpack }} (copy ${{ matrix.copy }})
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +47,8 @@ jobs:
             { runner: ubuntu-24.04, os: ubuntu, flavor: puc-lua, cc: gcc, deps_flags: -D USE_BUNDLED_LUAJIT=OFF -D USE_BUNDLED_LUA=ON, flags: -D PREFER_LUA=ON },
           ]
         test: [oldtest]
-        copy: [1, 2, 3]
+        msgpack: [stock, patched]
+        copy: [1, 2]
     runs-on: ${{ matrix.build.runner }}
     timeout-minutes: 60
     env:
@@ -66,12 +67,23 @@ jobs:
         run: mkdir -p "$LOG_DIR"
 
       - name: Set up interpreter packages
+        env:
+          MSGPACK: ${{ matrix.msgpack }}
+          PATCH_FILE: ${{ github.workspace }}/ci/patches/msgpack-raw-feed.patch
         run: |
           echo "Install neovim RubyGem."
           gem install --no-document --bindir "$BIN_DIR" --user-install --pre neovim
 
+          if [ "$MSGPACK" = "patched" ]; then
+            echo "=== Installing PATCHED MsgPack::Raw ==="
+            curl -sL https://cpan.metacpan.org/authors/id/J/JA/JACQUESG/MsgPack-Raw-0.05.tar.gz | tar xz -C /tmp
+            patch -p1 -d /tmp/MsgPack-Raw-0.05 < "$PATCH_FILE"
+            grep -A2 'SvPV (buffer, size)' /tmp/MsgPack-Raw-0.05/xs/Unpacker.xs
+            sudo cpanm -n /tmp/MsgPack-Raw-0.05 || cat "$HOME/.cpanm/build.log"
+          fi
+
           sudo cpanm -n Neovim::Ext || cat "$HOME/.cpanm/build.log"
-          perl -W -e 'use Neovim::Ext; print $Neovim::Ext::VERSION'
+          perl -W -e 'use Neovim::Ext; print "Neovim::Ext ", $Neovim::Ext::VERSION, " MsgPack::Raw ", $MsgPack::Raw::VERSION, "\n"'
 
       - name: Remove .git directory
         run: cmake -E rm -rf -- .git
